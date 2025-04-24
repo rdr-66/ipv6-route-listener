@@ -130,3 +130,76 @@ This tool provides a workaround by manually configuring the routes based on the 
 ## 🔗 References
 
 - [Matter Server Docker Container on Synology NAS / Home Assistant Core](https://community.home-assistant.io/t/matter-server-docker-container-on-synology-nas-home-assistant-core/751120/15)
+
+## Verification Tools
+
+This project includes several tools to ensure code quality and consistency:
+
+### Prerequisites
+
+Before running any verification tools, make sure you have installed the project dependencies:
+
+```bash
+# Install Poetry if you don't have it
+curl -sSL https://install.python-poetry.org | python3 -
+
+# Install project dependencies
+poetry install
+```
+
+### Makefile
+
+The project includes a Makefile with targets for verification:
+
+```bash
+# Run all verification steps (format, lint, test, type-check)
+make verify
+
+# Run verification in check-only mode (for CI)
+make verify-check
+
+# Run individual steps
+make format
+make lint
+make test
+make type-check
+```
+
+### Verification Script
+
+A simple script is provided to run the Makefile commands:
+
+```bash
+# Run verification in fix mode (for local development)
+./scripts/verify.sh
+
+# Run verification in check-only mode (for CI)
+./scripts/verify.sh --check
+```
+
+### Pre-commit Hooks
+
+Pre-commit hooks automatically run verification steps when you commit changes:
+
+1. Install pre-commit:
+   ```bash
+   pip install pre-commit
+   ```
+
+2. Install the hooks:
+   ```bash
+   pre-commit install
+   ```
+
+3. (Optional) Run hooks on all files:
+   ```bash
+   pre-commit run --all-files
+   ```
+
+### GitHub Actions
+
+The project includes a GitHub Actions workflow that runs verification on:
+- Every push to the main branch
+- Every pull request to the main branch
+
+This ensures that all code in the repository meets quality standards.
