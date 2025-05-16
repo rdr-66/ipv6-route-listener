@@ -8,13 +8,13 @@ from typing import Optional
 class Logger:
     """Custom logger for the route listener application."""
     
-    def __init__(self, log_ignored: bool = False):
+    def __init__(self, verbose: bool = False):
         """Initialize the logger.
         
         Args:
-            log_ignored: Whether to log ignored routes
+            verbose: Whether to enable verbose logging output
         """
-        self.log_ignored = log_ignored
+        self.verbose = verbose
         self._setup_logging()
         
     def _setup_logging(self):
@@ -28,8 +28,16 @@ class Logger:
         
         # Create a logger
         self._logger = logging.getLogger('route_listener')
-        self._logger.setLevel(logging.INFO)
+        self._logger.setLevel(logging.DEBUG)  # Set to DEBUG by default
         self._logger.addHandler(console_handler)
+        
+    def setLevel(self, level: int) -> None:
+        """Set the logging level.
+        
+        Args:
+            level: The logging level to set
+        """
+        self._logger.setLevel(level)
         
     def info(self, message: str) -> None:
         """Log an info message.
@@ -53,17 +61,9 @@ class Logger:
         Args:
             message: The message to log
         """
-        self._logger.debug(message)
+        if self.verbose:
+            self._logger.debug(message)
         
-    def ignored(self, message: str) -> None:
-        """Log an ignored route message.
-        
-        Args:
-            message: The message to log
-        """
-        if self.log_ignored:
-            self._logger.info(message)
-            
     def isEnabledFor(self, level: int) -> bool:
         """Check if the logger is enabled for the given level.
         
@@ -77,4 +77,30 @@ class Logger:
 
     def banner(self, message: str) -> None:
         """Log a banner message."""
-        self._logger.info(message) 
+        self._logger.info(message)
+
+    def packet_info(self, src_addr: str, prefix: str, prefix_len: int, router: str = None) -> None:
+        """Log basic packet information in a single line.
+        
+        Args:
+            src_addr: Source address of the Router Advertisement
+            prefix: The prefix or route
+            prefix_len: The prefix length
+            router: The router address (if different from source)
+        """
+        if not self.verbose:
+            return
+            
+        router_str = f" via {router}" if router and router != src_addr else ""
+        self._logger.info(f"🔔 RA from {src_addr}: {prefix}/{prefix_len}{router_str}")
+
+    def ignored_route(self, prefix: str, prefix_len: int, reason: str) -> None:
+        """Log ignored route information in a single line.
+        
+        Args:
+            prefix: The prefix that was ignored
+            prefix_len: The prefix length
+            reason: The reason for ignoring the route
+        """
+        if self.verbose:
+            self._logger.info(f"⏭️  Ignored {prefix}/{prefix_len}: {reason}") 

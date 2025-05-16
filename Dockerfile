@@ -24,7 +24,7 @@ COPY pyproject.toml poetry.lock* ./
 # Install poetry and dependencies
 RUN pip install --no-cache-dir poetry \
     && poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-root
+    && poetry install --no-interaction --no-root --with dev
 
 # Install code quality tools
 RUN pip install --no-cache-dir \
@@ -45,4 +45,12 @@ RUN chmod +x bin/*
 # Enable low-level packet capture (needed for scapy)
 RUN setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))
 
-CMD ["python", "-m", "route_listener.main"]
+# Create a non-root user for running tests
+RUN useradd -m -s /bin/bash testuser
+RUN chown -R testuser:testuser /app
+
+# Switch to testuser for running tests
+USER testuser
+
+# Default command (can be overridden)
+CMD ["python", "-m", "route_listener.main", "-i", "ovs_eth0"]

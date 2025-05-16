@@ -2,6 +2,7 @@
 
 from scapy.all import sniff, IP, IPv6, ICMPv6ND_RA, ICMPv6ND_RS, ICMPv6NDOptPrefixInfo, ICMPv6NDOptRouteInfo, send, conf
 from .packet_handler import BasePacketHandler
+from .route_info import RouteInfo, RouteInfoProcessor
 import threading
 import time
 import binascii
@@ -9,6 +10,20 @@ import binascii
 class ScapyPacketHandler(BasePacketHandler):
     """Scapy-based implementation of ICMPv6 Router Advertisement handler."""
     
+    def __init__(self, interface, route_configurator, logger, enable_rs=False):
+        """Initialize the packet handler.
+        
+        Args:
+            interface: The network interface to listen on
+            route_configurator: The route configurator instance
+            logger: The logger instance
+            enable_rs: Whether to enable Router Solicitation
+        """
+        super().__init__(interface, route_configurator, logger)
+        self.route_processor = RouteInfoProcessor(route_configurator, logger)
+        self.running = True
+        self.enable_rs = enable_rs
+
     def start(self):
         """Start listening for Router Advertisements."""
         self.logger.info(f"📡 Listening for Router Advertisements on interface '{self.interface}'...")
@@ -18,10 +33,11 @@ class ScapyPacketHandler(BasePacketHandler):
         conf.iface = self.interface
         conf.use_pcap = True  # Use libpcap for better performance
         
-        # Start Router Solicitation thread
-        rs_thread = threading.Thread(target=self._send_router_solicitations)
-        rs_thread.daemon = True
-        rs_thread.start()
+        # Start Router Solicitation thread if enabled
+        if self.enable_rs:
+            rs_thread = threading.Thread(target=self._send_router_solicitations)
+            rs_thread.daemon = True
+            rs_thread.start()
         
         # Start packet capture with a more specific filter
         self.logger.debug(f"🔍 Starting packet capture on interface '{self.interface}' with filter 'icmp6 and ip6[40] = 134'")
@@ -81,84 +97,66 @@ class ScapyPacketHandler(BasePacketHandler):
             # Get the Router Advertisement layer
             ra = packet[ICMPv6ND_RA]
             
-            # Check if the packet has the expected structure
-            if not hasattr(ra, 'payload'):
-                self.logger.debug("❌ No payload in Router Advertisement")
-                return
-                
-            self.logger.debug(f"🔍 Processing Router Advertisement options: {ra.payload}")
+            # Now we can log the packet details if in debug mode
+            if self.logger.verbose:
+                self.logger.debug(f"🔍 Raw RA data: {ra.show()}")
+                self.logger.debug(f"🔍 RA options: {ra.payload}")
             
-            # Extract prefix and route information from options
+            # Extract route information from options
+            route_infos = []
             for opt in ra.payload:
-                self.logger.debug(f"🔍 Processing option: {type(opt).__name__}")
+                if self.logger.verbose:
+                    self.logger.debug(f"🔍 Processing option: {type(opt).__name__}")
+                    self.logger.debug(f"🔍 Option data: {opt.show()}")
                 
                 if isinstance(opt, ICMPv6NDOptPrefixInfo):
                     try:
                         prefix_str = str(opt.prefix)
                         prefix_len = opt.prefixlen
-                        self.logger.debug(f"🔍 Found prefix: {prefix_str}/{prefix_len}")
-                        if prefix_str.startswith("fd"):
-                            self.logger.debug(f"🔍 Found ULA prefix: {prefix_str}/{prefix_len}")
-                            self._process_ula_prefix(prefix_str, prefix_len, packet[IPv6].src)
-                        else:
-                            self.logger.debug(f"⏭️  Ignoring non-ULA prefix: {prefix_str}/{prefix_len}")
+                        if self.logger.verbose:
+                            self.logger.debug(f"🔍 Found prefix: {prefix_str}/{prefix_len}")
+                        route_infos.append(RouteInfo(
+                            prefix=prefix_str,
+                            prefix_len=prefix_len,
+                            router=packet[IPv6].src,
+                            is_prefix=True,
+                            valid_time=opt.validlifetime,
+                            pref_time=opt.preferredlifetime
+                        ))
                     except AttributeError as e:
-                        self.logger.error(f"❌ Error processing prefix option: Missing required attribute - {str(e)}")
-                        self.logger.debug(f"Option data: {opt}")
+                        if self.logger.verbose:
+                            self.logger.error(f"❌ Error processing prefix option: Missing required attribute - {str(e)}")
+                            self.logger.debug(f"Option data: {opt}")
                 elif isinstance(opt, ICMPv6NDOptRouteInfo):
                     try:
-                        # Log the raw option data for debugging
-                        self.logger.debug(f"Route option data: {opt}")
-                        
-                        # Try to get the prefix first
-                        try:
-                            prefix_str = str(opt.prefix)
-                            self.logger.debug(f"Found prefix: {prefix_str}")
-                        except AttributeError:
-                            self.logger.error("❌ Error: Route option missing 'prefix' attribute")
-                            self.logger.debug(f"Available attributes: {dir(opt)}")
-                            continue
-                            
-                        # Try to get the prefix length
-                        try:
-                            prefix_len = opt.prefixlen
-                            self.logger.debug(f"Found prefix length: {prefix_len}")
-                        except AttributeError:
-                            # Try alternative attribute names for prefix length
-                            if hasattr(opt, 'plen'):
-                                prefix_len = opt.plen
-                                self.logger.debug(f"Found prefix length using 'plen' attribute: {prefix_len}")
-                            else:
-                                self.logger.error(f"❌ Error: Route option missing 'prefixlen' attribute for prefix {prefix_str}")
-                                self.logger.debug(f"Available attributes: {dir(opt)}")
-                                continue
-                            
-                        # Process the route if we have both prefix and prefix length
-                        self.logger.debug(f"🔍 Found route: {prefix_str}/{prefix_len}")
-                        if prefix_str.startswith("fd"):
-                            self.logger.debug(f"🔍 Found ULA route: {prefix_str}/{prefix_len}")
-                            self._process_ula_route(prefix_str, prefix_len, packet[IPv6].src)
-                        else:
-                            self.logger.debug(f"⏭️  Ignoring non-ULA route: {prefix_str}/{prefix_len}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Error processing route option: {str(e)}")
-                        self.logger.debug(f"Option data: {opt}")
-                        self.logger.debug(f"Available attributes: {dir(opt)}")
+                        prefix_str = str(opt.prefix)
+                        prefix_len = opt.plen  # Route Info uses 'plen' instead of 'prefixlen'
+                        if self.logger.verbose:
+                            self.logger.debug(f"🔍 Found route: {prefix_str}/{prefix_len}")
+                        route_infos.append(RouteInfo(
+                            prefix=prefix_str,
+                            prefix_len=prefix_len,
+                            router=packet[IPv6].src,
+                            is_prefix=False,
+                            lifetime=opt.rtlifetime
+                        ))
+                    except AttributeError as e:
+                        if self.logger.verbose:
+                            self.logger.error(f"❌ Error processing route option: {str(e)}")
+                            self.logger.debug(f"Option data: {opt}")
                 else:
-                    self.logger.debug(f"⏭️  Ignoring option type: {type(opt).__name__}")
+                    if self.logger.verbose:
+                        self.logger.debug(f"⏭️  Ignoring option type: {type(opt).__name__}")
+            
+            # Process all route information
+            if route_infos:
+                self.route_processor.process_route_infos(route_infos)
+            elif self.logger.verbose:
+                self.logger.debug("⏭️  No route information found in packet")
                     
         except Exception as e:
-            self._log_error("Error processing Router Advertisement", e)
-            
-    def _process_ula_route(self, prefix: str, prefix_len: int, router: str = None):
-        """Process a ULA route (distinct from a prefix)."""
-        if prefix.startswith("fd"):
-            # Ensure the prefix doesn't already include a length
-            base_prefix = prefix.split('/')[0]
-            self.logger.info(f"🔍 Found ULA route: {base_prefix}/{prefix_len}")
-            self.route_configurator.configure(base_prefix, prefix_len, router)
-        else:
-            self.logger.debug(f"⏭️  Ignoring non-ULA route: {prefix}/{prefix_len}")
+            if self.logger.verbose:
+                self._log_error("Error processing Router Advertisement", e)
             
     def stop(self):
         """Stop the packet handler."""

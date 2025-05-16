@@ -71,7 +71,7 @@ def test_route_processing(route_configurator, mock_logger):
             assert env['ROUTER'] == router
 
             # Verify the script path
-            assert 'configure-ipv6-route.sh' in str(call_args[0][0])
+            assert 'configure-ipv6-route.sh' in str(mock_run.call_args.args[0])
 
             # Verify logging
             mock_logger.info.assert_any_call(f"🔧 Configuring route for {prefix}/{prefix_len}")

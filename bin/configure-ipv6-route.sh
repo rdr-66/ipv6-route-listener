@@ -55,6 +55,7 @@ check_var "PREFIX"
 check_var "PREFIX_LEN"
 check_var "IFACE"
 check_var "ROUTER"
+check_var "IS_PREFIX"
 
 # Validate inputs
 validate_prefix "$PREFIX"
@@ -63,7 +64,7 @@ validate_interface "$IFACE"
 validate_router "$ROUTER"
 
 # Log the configuration
-echo "🔍 Configuring route: $PREFIX/$PREFIX_LEN via $ROUTER on interface $IFACE"
+echo "🔍 Configuring ${IS_PREFIX:+prefix}${IS_PREFIX:-route}: $PREFIX/$PREFIX_LEN via $ROUTER on interface $IFACE"
 
 # Remove any existing routes for this prefix
 # This includes both exact matches and higher-order subnets
@@ -92,10 +93,21 @@ for LENGTH in 64 48 32 16; do
 done
 
 # Add the new route with the specified prefix length
-echo "➕ Adding route to $BASE_PREFIX/$PREFIX_LEN via $ROUTER on $IFACE"
-if ip -6 route add "$BASE_PREFIX/$PREFIX_LEN" via "$ROUTER" dev "$IFACE"; then
-    echo "✅ Route added successfully"
+echo "➕ Adding ${IS_PREFIX:+prefix}${IS_PREFIX:-route} to $BASE_PREFIX/$PREFIX_LEN via $ROUTER on $IFACE"
+if [ "$IS_PREFIX" = "1" ]; then
+    # For prefixes, we add a route with the 'onlink' flag
+    if ip -6 route add "$BASE_PREFIX/$PREFIX_LEN" via "$ROUTER" dev "$IFACE" onlink; then
+        echo "✅ Prefix added successfully"
+    else
+        echo "❌ Failed to add prefix"
+        exit 1
+    fi
 else
-    echo "❌ Failed to add route"
-    exit 1
+    # For routes, we add a normal route
+    if ip -6 route add "$BASE_PREFIX/$PREFIX_LEN" via "$ROUTER" dev "$IFACE"; then
+        echo "✅ Route added successfully"
+    else
+        echo "❌ Failed to add route"
+        exit 1
+    fi
 fi 

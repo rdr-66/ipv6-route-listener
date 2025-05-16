@@ -6,7 +6,9 @@ CONTAINER_NAME="route-listener-container"
 IMAGE_NAME="route-listener"
 
 # Default interface
-INTERFACE="eth0"
+INTERFACE="ovs_eth0"
+DEBUG=""
+VERBOSE=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -15,9 +17,17 @@ while [[ $# -gt 0 ]]; do
       INTERFACE="$2"
       shift 2
       ;;
+    --debug)
+      DEBUG="--debug"
+      shift
+      ;;
+    --verbose)
+      VERBOSE="--verbose"
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
-      echo "Usage: $0 [-i|--interface <interface>]"
+      echo "Usage: $0 [-i|--interface <interface>] [--debug] [--verbose]"
       exit 1
       ;;
   esac
@@ -55,7 +65,7 @@ docker run --rm \
   --cap-add=NET_BROADCAST \
   --cap-add=SYS_ADMIN \
   -it \
-  $IMAGE_NAME python -u -m route_listener.main -i "$INTERFACE"
+  $IMAGE_NAME python -u -m route_listener.main -i "$INTERFACE" $DEBUG $VERBOSE
 
 # If we get here, the container has exited
 echo "📋 Container has exited." 

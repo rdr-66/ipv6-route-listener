@@ -34,8 +34,8 @@ This project provides a workaround by:
     # Or specify a custom interface
     ./run.sh -i wlan0
 
-    # Enable logging of ignored routes
-    ./run.sh --log-ignored
+    # Enable verbose logging
+    ./run.sh --verbose
     ```
 
 ## 🐍 Local Development
@@ -58,14 +58,29 @@ If you're not using Docker:
 
     ```bash
     # Use default interface (eth0)
-    poetry run python -m route_listener.main
+    poetry run route-listen
 
     # Or specify a custom interface
-    poetry run python -m route_listener.main -i wlan0
+    poetry run route-listen -i wlan0
 
-    # Enable logging of ignored routes
-    poetry run python -m route_listener.main --log-ignored
+    # Enable debug logging
+    poetry run route-listen -i wlan0 --debug
+
+    # Enable verbose logging
+    poetry run route-listen --verbose
     ```
+
+    Note: Since this tool needs to capture network packets, you might need to run it with sudo:
+
+    ```bash
+    sudo poetry run route-listen -i wlan0 --debug
+    ```
+
+    Available options:
+    - `-i, --interface`: Specify the network interface to listen on (default: eth0)
+    - `--debug`: Enable detailed debug logging
+    - `--verbose`: Enable verbose logging output
+    - `--enable-rs`: Enable Router Solicitation
 
 ## 💡 How It Works
 

@@ -14,9 +14,10 @@ class Route:
     prefix: str
     router: str
     interface: str
+    is_prefix: bool = False  # Whether this is a prefix (on-link) or route (off-link)
 
     def __str__(self) -> str:
-        return f"{self.prefix} via {self.router}"
+        return f"{self.prefix} via {self.router} ({'prefix' if self.is_prefix else 'route'})"
 
     def is_ula(self) -> bool:
         """Check if this is a ULA prefix (starts with 'fd')."""
@@ -26,7 +27,7 @@ class Route:
         """Get a unique key for this route."""
         # Remove any existing prefix length notation
         base_prefix = self.prefix.split('/')[0]
-        return f"{base_prefix}|{self.router}"
+        return f"{base_prefix}|{self.router}|{self.interface}|{self.is_prefix}"
 
 class RouteConfigurator:
     """Handles IPv6 route configuration."""
@@ -42,21 +43,41 @@ class RouteConfigurator:
         self.interface = interface
         self.seen_routes = set()
         
-    def configure(self, prefix: str, prefix_len: int, router: str = None) -> None:
+    def is_configured(self, prefix: str, prefix_len: int, is_prefix: bool = False) -> bool:
+        """Check if a route is already configured.
+        
+        Args:
+            prefix: IPv6 prefix to check
+            prefix_len: Prefix length
+            is_prefix: Whether this is a prefix (on-link) or route (off-link)
+            
+        Returns:
+            bool: True if the route is already configured, False otherwise
+        """
+        # Create a Route object to get the route key
+        route = Route(prefix, None, self.interface, is_prefix)
+        route_key = route.get_route_key()
+        return route_key in self.seen_routes
+        
+    def configure(self, prefix: str, prefix_len: int, router: str = None, is_prefix: bool = False) -> None:
         """Configure a route for the given prefix.
         
         Args:
             prefix: IPv6 prefix to configure
             prefix_len: Prefix length
             router: Router address (optional)
+            is_prefix: Whether this is a prefix (on-link) or route (off-link)
         """
+        # Create a Route object
+        route = Route(prefix, router, self.interface, is_prefix)
+        
         # Skip if we've seen this route before
-        route_key = self.get_route_key(prefix, router)
+        route_key = route.get_route_key()
         if route_key in self.seen_routes:
-            self.logger.info(f"⏭️  Route already configured: {prefix}/{prefix_len}")
+            self.logger.info(f"⏭️  {'Prefix' if is_prefix else 'Route'} already configured: {prefix}/{prefix_len}")
             return
             
-        self.logger.info(f"🔧 Configuring route for {prefix}/{prefix_len}")
+        self.logger.info(f"🔧 Configuring {'prefix' if is_prefix else 'route'} for {prefix}/{prefix_len}")
         
         # Run the shell script to configure the route
         script_path = os.path.join(os.path.dirname(__file__), "..", "bin", "configure-ipv6-route.sh")
@@ -68,6 +89,7 @@ class RouteConfigurator:
             env["IFACE"] = self.interface
             if router:
                 env["ROUTER"] = router
+            env["IS_PREFIX"] = "1" if is_prefix else "0"
                 
             # Log the parameters before running the script
             self.logger.info(f"🔍 Running script with parameters:")
@@ -78,6 +100,7 @@ class RouteConfigurator:
                 self.logger.info(f"   ROUTER: {router}")
             else:
                 self.logger.warning("⚠️  No router address provided")
+            self.logger.info(f"   TYPE: {'prefix' if is_prefix else 'route'}")
                 
             result = subprocess.run(
                 [script_path],
@@ -86,10 +109,10 @@ class RouteConfigurator:
                 text=True,
                 check=True
             )
-            self.logger.info(f"✅ Route configured successfully: {result.stdout}")
+            self.logger.info(f"✅ {'Prefix' if is_prefix else 'Route'} configured successfully: {result.stdout}")
             self.seen_routes.add(route_key)
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"❌ Failed to configure route: {e.stderr}")
+            self.logger.error(f"❌ Failed to configure {'prefix' if is_prefix else 'route'}: {e.stderr}")
             
     def get_route_key(self, prefix: str, router: str = None) -> str:
         """Generate a unique key for a route.

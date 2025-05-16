@@ -9,7 +9,7 @@ sleep 2
 
 # Run rdisc6 to discover routers
 echo "🔍 Running router discovery..."
-rdisc6 eth0
+rdisc6 ovs_eth0
 
 # Wait for the listener process
 wait 
