@@ -6,7 +6,6 @@ import re
 from typing import Optional, Dict, Set
 from dataclasses import dataclass
 from .logger import Logger
-from .router_discovery import RouterDiscovery
 
 @dataclass
 class Route:
@@ -29,6 +28,69 @@ class Route:
         base_prefix = self.prefix.split('/')[0]
         return f"{base_prefix}|{self.router}|{self.interface}|{self.is_prefix}"
 
+class RouteExecutor:
+    """Handles the actual execution of route configuration commands."""
+    
+    def __init__(self, logger: Logger, interface: str = "eth0"):
+        """Initialize route executor.
+        
+        Args:
+            logger: Logger instance for output
+            interface: Network interface to use (default: eth0)
+        """
+        self.logger = logger
+        self.interface = interface
+        self.script_path = os.path.join(os.path.dirname(__file__), "..", "bin", "configure-ipv6-route.sh")
+        
+    def execute(self, route: Route, prefix_len: int) -> bool:
+        """Execute the route configuration command.
+        
+        Args:
+            route: The route to configure
+            prefix_len: Prefix length
+            
+        Returns:
+            bool: True if configuration was successful, False otherwise
+        """
+        try:
+            # Set environment variables for the script
+            env = os.environ.copy()
+            env["PREFIX"] = route.prefix
+            env["PREFIX_LEN"] = str(prefix_len)
+            env["IFACE"] = self.interface
+            if route.router:
+                env["ROUTER"] = route.router
+            env["IS_PREFIX"] = "1" if route.is_prefix else "0"
+                
+            # Log the parameters before running the script
+            self.logger.info(f"🔍 Running script with parameters:")
+            self.logger.info(f"   PREFIX: {route.prefix}")
+            self.logger.info(f"   PREFIX_LEN: {prefix_len}")
+            self.logger.info(f"   IFACE: {self.interface}")
+            if route.router:
+                self.logger.info(f"   ROUTER: {route.router}")
+            else:
+                self.logger.warning("⚠️  No router address provided")
+            self.logger.info(f"   TYPE: {'prefix' if route.is_prefix else 'route'}")
+                
+            result = subprocess.run(
+                [self.script_path],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            self.logger.info(f"✅ {'Prefix' if route.is_prefix else 'Route'} configured successfully: {result.stdout}")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"❌ Failed to configure {'prefix' if route.is_prefix else 'route'}: {e.stderr}")
+            if self.logger.verbose:
+                self.logger.debug(f"Command output: {e.stdout}")
+                self.logger.debug(f"Command error: {e.stderr}")
+                self.logger.debug(f"Return code: {e.returncode}")
+            return False
+
 class RouteConfigurator:
     """Handles IPv6 route configuration."""
     
@@ -42,6 +104,7 @@ class RouteConfigurator:
         self.logger = logger
         self.interface = interface
         self.seen_routes = set()
+        self.executor = RouteExecutor(logger, interface)
         
     def is_configured(self, prefix: str, prefix_len: int, is_prefix: bool = False) -> bool:
         """Check if a route is already configured.
@@ -79,45 +142,10 @@ class RouteConfigurator:
             
         self.logger.info(f"🔧 Configuring {'prefix' if is_prefix else 'route'} for {prefix}/{prefix_len}")
         
-        # Run the shell script to configure the route
-        script_path = os.path.join(os.path.dirname(__file__), "..", "bin", "configure-ipv6-route.sh")
-        try:
-            # Set environment variables for the script
-            env = os.environ.copy()
-            env["PREFIX"] = prefix
-            env["PREFIX_LEN"] = str(prefix_len)
-            env["IFACE"] = self.interface
-            if router:
-                env["ROUTER"] = router
-            env["IS_PREFIX"] = "1" if is_prefix else "0"
-                
-            # Log the parameters before running the script
-            self.logger.info(f"🔍 Running script with parameters:")
-            self.logger.info(f"   PREFIX: {prefix}")
-            self.logger.info(f"   PREFIX_LEN: {prefix_len}")
-            self.logger.info(f"   IFACE: {self.interface}")
-            if router:
-                self.logger.info(f"   ROUTER: {router}")
-            else:
-                self.logger.warning("⚠️  No router address provided")
-            self.logger.info(f"   TYPE: {'prefix' if is_prefix else 'route'}")
-                
-            result = subprocess.run(
-                [script_path],
-                env=env,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            self.logger.info(f"✅ {'Prefix' if is_prefix else 'Route'} configured successfully: {result.stdout}")
+        # Execute the route configuration
+        if self.executor.execute(route, prefix_len):
             self.seen_routes.add(route_key)
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"❌ Failed to configure {'prefix' if is_prefix else 'route'}: {e.stderr}")
-            if self.logger.verbose:
-                self.logger.debug(f"Command output: {e.stdout}")
-                self.logger.debug(f"Command error: {e.stderr}")
-                self.logger.debug(f"Return code: {e.returncode}")
-            
+
     def get_route_key(self, prefix: str, router: str = None) -> str:
         """Generate a unique key for a route.
         
@@ -132,4 +160,35 @@ class RouteConfigurator:
         base_prefix = prefix.split('/')[0]
         if router:
             return f"{base_prefix}|{router}|{self.interface}"
-        return f"{base_prefix}|{self.interface}" 
+        return f"{base_prefix}|{self.interface}"
+
+    def process_packet_info(self, packet_info: dict) -> None:
+        """Process packet information from a Router Advertisement.
+        
+        Args:
+            packet_info: Dictionary containing packet information:
+                - src_ip: Source IP address of the Router Advertisement
+                - prefix: Optional prefix information dictionary
+                - route: Optional route information dictionary
+        """
+        src_ip = packet_info["src_ip"]
+        
+        # Process prefix if present
+        if "prefix" in packet_info:
+            prefix_info = packet_info["prefix"]
+            prefix = prefix_info["address"]
+            prefix_len = prefix_info["length"]
+            
+            # Only configure ULA prefixes
+            if prefix.startswith("fd"):
+                self.configure(prefix, prefix_len, router=src_ip, is_prefix=True)
+        
+        # Process route if present
+        if "route" in packet_info:
+            route_info = packet_info["route"]
+            route = route_info["address"]
+            route_len = route_info["length"]
+            
+            # Only configure ULA routes
+            if route.startswith("fd"):
+                self.configure(route, route_len, router=src_ip, is_prefix=False) 

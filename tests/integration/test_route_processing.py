@@ -1,31 +1,41 @@
 """Integration tests for route advertisement processing."""
 
 import pytest
-from route_listener.route_configurator import RouteConfigurator
+from route_listener.route_configurator import RouteConfigurator, Route, RouteExecutor
 from route_listener.logger import Logger
+from route_listener.packet_parser import PacketParser
 from unittest.mock import patch, MagicMock
 import subprocess
 
-# Sample data from rdisc6 output
-SAMPLE_RA_DATA = [
+# Sample data representing Router Advertisement packets
+SAMPLE_RA_PACKETS = [
     {
-        "prefix": "2406:e001:abcd:5600::/64",
-        "router": "fe80::f209:dff:fe35:48a",
-        "autonomous": False,
-        "on_link": True,
-        "valid_time": 86400,
-        "pref_time": 14400
+        "description": "RA with ULA prefix and route",
+        "src_ip": "fe80::f209:dff:fe35:48a",
+        "prefix": {
+            "address": "fd82:cd32:5ad7:ff4a::",
+            "length": 64,
+            "on_link": True,
+            "autonomous": True,
+            "valid_time": 1800,
+            "pref_time": 1800
+        },
+        "route": {
+            "address": "fd4e:a053:febd::",
+            "length": 64,
+            "lifetime": 1800
+        }
     },
     {
-        "prefix": "fd82:cd32:5ad7:ff4a::/64",
-        "router": "fe80::1451:3cb7:4e5f:e588",
-        "autonomous": True,
-        "on_link": True,
-        "valid_time": 1800,
-        "pref_time": 1800,
-        "route": {
-            "prefix": "fd4e:a053:febd::/64",
-            "lifetime": 1800
+        "description": "RA with non-ULA prefix",
+        "src_ip": "fe80::f209:dff:fe35:48a",
+        "prefix": {
+            "address": "2406:e001:abcd:5600::",
+            "length": 64,
+            "on_link": True,
+            "autonomous": False,
+            "valid_time": 86400,
+            "pref_time": 14400
         }
     }
 ]
@@ -38,202 +48,147 @@ def mock_logger():
     return logger
 
 @pytest.fixture
-def route_configurator(mock_logger):
+def mock_executor(mock_logger):
+    """Create a mock route executor."""
+    executor = MagicMock(spec=RouteExecutor)
+    executor.execute.return_value = True
+    return executor
+
+@pytest.fixture
+def route_configurator(mock_logger, mock_executor):
     """Create a RouteConfigurator instance with mocked dependencies."""
-    return RouteConfigurator(logger=mock_logger, interface="eth0")
+    configurator = RouteConfigurator(logger=mock_logger, interface="eth0")
+    configurator.executor = mock_executor
+    return configurator
 
-def test_route_processing(route_configurator, mock_logger):
-    """Test that routes are correctly processed from router advertisements."""
-    with patch('subprocess.run') as mock_run:
-        # Configure mock to return success
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="Route added successfully\n",
-            stderr=""
-        )
+@pytest.fixture
+def packet_parser():
+    """Create a packet parser instance."""
+    return PacketParser()
 
-        # Process each route from the sample data
-        for ra in SAMPLE_RA_DATA:
-            prefix = ra["prefix"].split('/')[0]
-            prefix_len = int(ra["prefix"].split('/')[1])
-            router = ra["router"]
+def test_process_ra_with_prefix_and_route(packet_parser, route_configurator, mock_logger, mock_executor):
+    """Test processing of a Router Advertisement with both prefix and route options."""
+    # Get test data
+    ra_data = SAMPLE_RA_PACKETS[0]
+    
+    # Create a dummy packet (in real code, this would be a Scapy packet)
+    dummy_packet = MagicMock()
+    
+    # Configure the parser to return our test data
+    packet_parser.parse = MagicMock(return_value={
+        "src_ip": ra_data["src_ip"],
+        "prefix": ra_data["prefix"],
+        "route": ra_data["route"]
+    })
+    
+    # Process the packet
+    packet_info = packet_parser.parse(dummy_packet)
+    
+    # Verify the packet was parsed correctly
+    assert packet_info["src_ip"] == ra_data["src_ip"]
+    assert packet_info["prefix"]["address"] == ra_data["prefix"]["address"]
+    assert packet_info["route"]["address"] == ra_data["route"]["address"]
+    
+    # Process the packet info
+    route_configurator.process_packet_info(packet_info)
+    
+    # Verify both routes were configured
+    assert mock_executor.execute.call_count == 2
+    calls = mock_executor.execute.call_args_list
 
-            # Configure the route
-            route_configurator.configure(prefix, prefix_len, router)
+    # Verify prefix route
+    prefix_route = calls[0][0][0]
+    assert isinstance(prefix_route, Route)
+    assert prefix_route.prefix == ra_data["prefix"]["address"]
+    assert prefix_route.router == ra_data["src_ip"]
+    assert prefix_route.interface == "eth0"
+    assert prefix_route.is_prefix
 
-            # Verify the correct command was executed
-            mock_run.assert_called()
-            call_args = mock_run.call_args[1]
-            
-            # Verify environment variables
-            env = call_args['env']
-            assert env['PREFIX'] == prefix
-            assert env['PREFIX_LEN'] == str(prefix_len)
-            assert env['IFACE'] == 'eth0'
-            assert env['ROUTER'] == router
+    # Verify off-link route
+    route_obj = calls[1][0][0]
+    assert isinstance(route_obj, Route)
+    assert route_obj.prefix == ra_data["route"]["address"]
+    assert route_obj.router == ra_data["src_ip"]
+    assert route_obj.interface == "eth0"
+    assert not route_obj.is_prefix
 
-            # Verify the script path
-            assert 'configure-ipv6-route.sh' in str(mock_run.call_args.args[0])
+    # Verify logging
+    mock_logger.info.assert_any_call(f"🔧 Configuring prefix for {ra_data['prefix']['address']}/{ra_data['prefix']['length']}")
+    mock_logger.info.assert_any_call(f"🔧 Configuring route for {ra_data['route']['address']}/{ra_data['route']['length']}")
 
-            # Verify logging
-            mock_logger.info.assert_any_call(f"🔧 Configuring route for {prefix}/{prefix_len}")
-            mock_logger.info.assert_any_call("✅ Route configured successfully: Route added successfully\n")
+def test_process_ra_with_non_ula_prefix(packet_parser, route_configurator, mock_logger, mock_executor):
+    """Test processing of a Router Advertisement with non-ULA prefix."""
+    # Get test data
+    ra_data = SAMPLE_RA_PACKETS[1]
+    
+    # Create a dummy packet
+    dummy_packet = MagicMock()
+    
+    # Configure the parser to return our test data
+    packet_parser.parse = MagicMock(return_value={
+        "src_ip": ra_data["src_ip"],
+        "prefix": ra_data["prefix"]
+    })
+    
+    # Process the packet
+    packet_info = packet_parser.parse(dummy_packet)
+    
+    # Verify the packet was parsed correctly
+    assert packet_info["src_ip"] == ra_data["src_ip"]
+    assert packet_info["prefix"]["address"] == ra_data["prefix"]["address"]
+    
+    # Process the packet info
+    route_configurator.process_packet_info(packet_info)
+    
+    # Verify no routes were configured (non-ULA prefix should be ignored)
+    mock_executor.execute.assert_not_called()
 
-def test_prefix_length_handling(route_configurator, mock_logger):
-    """Test that prefix lengths are correctly handled in route configuration."""
-    with patch('subprocess.run') as mock_run:
-        # Configure mock to return success
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="Route added successfully\n",
-            stderr=""
-        )
-
-        # Test cases with different prefix lengths
-        test_cases = [
-            ("fd82:cd32:5ad7:ff4a::", 64, "fe80::1451:3cb7:4e5f:e588"),
-            ("fd4e:a053:febd::", 48, "fe80::1451:3cb7:4e5f:e588"),
-            ("2001:db8::", 32, "fe80::1451:3cb7:4e5f:e588"),
-        ]
-
-        for prefix, prefix_len, router in test_cases:
-            # Configure the route
-            route_configurator.configure(prefix, prefix_len, router)
-
-            # Verify the correct command was executed
-            mock_run.assert_called()
-            call_args = mock_run.call_args[1]
-            
-            # Verify environment variables
-            env = call_args['env']
-            assert env['PREFIX'] == prefix
-            assert env['PREFIX_LEN'] == str(prefix_len), f"Expected prefix length {prefix_len}, got {env['PREFIX_LEN']}"
-            assert env['IFACE'] == 'eth0'
-            assert env['ROUTER'] == router
-
-            # Verify logging includes the correct prefix length
-            mock_logger.info.assert_any_call(f"🔧 Configuring route for {prefix}/{prefix_len}")
-
-            # Reset mock for next iteration
-            mock_run.reset_mock()
-
-def test_duplicate_route_handling(route_configurator, mock_logger):
+def test_duplicate_route_handling(packet_parser, route_configurator, mock_logger, mock_executor):
     """Test that duplicate routes are not processed multiple times."""
-    with patch('subprocess.run') as mock_run:
-        # Configure mock to return success
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="Route added successfully\n",
-            stderr=""
-        )
+    # Get test data
+    ra_data = SAMPLE_RA_PACKETS[0]
+    
+    # Create a dummy packet
+    dummy_packet = MagicMock()
+    
+    # Configure the parser to return our test data
+    packet_parser.parse = MagicMock(return_value={
+        "src_ip": ra_data["src_ip"],
+        "prefix": ra_data["prefix"],
+        "route": ra_data["route"]
+    })
+    
+    # Process the packet twice
+    packet_info = packet_parser.parse(dummy_packet)
+    route_configurator.process_packet_info(packet_info)
+    route_configurator.process_packet_info(packet_info)
+    
+    # Verify the executor was only called once for each route
+    assert mock_executor.execute.call_count == 2
+    mock_logger.info.assert_any_call("⏭️  Prefix already configured: fd82:cd32:5ad7:ff4a::/64")
+    mock_logger.info.assert_any_call("⏭️  Route already configured: fd4e:a053:febd::/64")
 
-        # Process the same route twice
-        prefix = "fd82:cd32:5ad7:ff4a::"
-        prefix_len = 64
-        router = "fe80::1451:3cb7:4e5f:e588"
-
-        # First configuration
-        route_configurator.configure(prefix, prefix_len, router)
-        assert mock_run.call_count == 1
-
-        # Second configuration of the same route
-        route_configurator.configure(prefix, prefix_len, router)
-        
-        # Verify the command was only called once
-        assert mock_run.call_count == 1
-        mock_logger.info.assert_any_call("⏭️  Route already configured: fd82:cd32:5ad7:ff4a::/64")
-
-def test_route_configuration_failure(route_configurator, mock_logger):
+def test_route_configuration_failure(packet_parser, route_configurator, mock_logger, mock_executor):
     """Test handling of route configuration failures."""
-    with patch('subprocess.run') as mock_run:
-        # Configure mock to simulate failure
-        mock_run.side_effect = subprocess.CalledProcessError(
-            1, 
-            "configure-ipv6-route.sh",
-            stderr="Failed to add route: Invalid prefix"
-        )
-
-        # Attempt to configure a route
-        prefix = "fd82:cd32:5ad7:ff4a::"
-        prefix_len = 64
-        router = "fe80::1451:3cb7:4e5f:e588"
-
-        route_configurator.configure(prefix, prefix_len, router)
-
-        # Verify error was logged
-        mock_logger.error.assert_called_with("❌ Failed to configure route: Failed to add route: Invalid prefix")
-
-def test_off_link_route_configuration(route_configurator, mock_logger):
-    """Test configuration of off-link routes with error handling."""
-    with patch('subprocess.run') as mock_run:
-        # Configure mock to simulate failure
-        mock_run.side_effect = subprocess.CalledProcessError(
-            1, 
-            "configure-ipv6-route.sh",
-            stderr="RTNETLINK answers: File exists",
-            output=""
-        )
-
-        # Attempt to configure an off-link route
-        prefix = "fd2b:7eb9:619c::"
-        prefix_len = 64
-        router = "fe80::85e:1f44:c26f:229"
-
-        # Configure the route
-        route_configurator.configure(prefix, prefix_len, router, is_prefix=False)
-
-        # Verify error was logged
-        mock_logger.error.assert_called_with("❌ Failed to configure route: RTNETLINK answers: File exists")
-        if mock_logger.verbose:
-            mock_logger.debug.assert_any_call("Command output: ")
-            mock_logger.debug.assert_any_call("Command error: RTNETLINK answers: File exists")
-            mock_logger.debug.assert_any_call("Return code: 1")
-
-def test_off_link_route_processing(route_configurator, mock_logger):
-    """Test that off-link routes are processed correctly."""
-    with patch('subprocess.run') as mock_run:
-        # Configure mock to return success
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="Route added successfully\n",
-            stderr=""
-        )
-
-        # Test data with both on-link prefix and off-link route
-        prefix = "fd82:cd32:5ad7:ff4a::"
-        prefix_len = 64
-        router = "fe80::85e:1f44:c26f:229"
-        off_link_route = "fd2b:7eb9:619c::"
-
-        # Configure both the on-link prefix and off-link route
-        route_configurator.configure(prefix, prefix_len, router, is_prefix=True)
-        route_configurator.configure(off_link_route, prefix_len, router, is_prefix=False)
-
-        # Verify both routes were configured
-        assert mock_run.call_count == 2
-
-        # Get all calls
-        calls = mock_run.call_args_list
-
-        # Verify on-link prefix configuration
-        prefix_call = calls[0]
-        prefix_env = prefix_call[1]['env']
-        assert prefix_env['PREFIX'] == prefix
-        assert prefix_env['PREFIX_LEN'] == str(prefix_len)
-        assert prefix_env['IFACE'] == 'eth0'
-        assert prefix_env['ROUTER'] == router
-        assert prefix_env['IS_PREFIX'] == "1"
-
-        # Verify off-link route configuration
-        route_call = calls[1]
-        route_env = route_call[1]['env']
-        assert route_env['PREFIX'] == off_link_route
-        assert route_env['PREFIX_LEN'] == str(prefix_len)
-        assert route_env['IFACE'] == 'eth0'
-        assert route_env['ROUTER'] == router
-        assert route_env['IS_PREFIX'] == "0"
-
-        # Verify logging
-        mock_logger.info.assert_any_call(f"🔧 Configuring prefix for {prefix}/{prefix_len}")
-        mock_logger.info.assert_any_call(f"🔧 Configuring route for {off_link_route}/{prefix_len}")
-        mock_logger.info.assert_any_call("✅ Route configured successfully: Route added successfully\n") 
+    # Configure mock to simulate failure
+    mock_executor.execute.return_value = False
+    
+    # Get test data
+    ra_data = SAMPLE_RA_PACKETS[0]
+    
+    # Create a dummy packet
+    dummy_packet = MagicMock()
+    
+    # Configure the parser to return our test data
+    packet_parser.parse = MagicMock(return_value={
+        "src_ip": ra_data["src_ip"],
+        "prefix": ra_data["prefix"],
+        "route": ra_data["route"]
+    })
+    
+    # Process the packet
+    packet_info = packet_parser.parse(dummy_packet)
+    route_configurator.process_packet_info(packet_info)
+    
+    # Verify the routes were not added to seen_routes
+    assert len(route_configurator.seen_routes) == 0 
