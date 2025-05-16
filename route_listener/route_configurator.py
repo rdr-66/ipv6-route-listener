@@ -73,22 +73,37 @@ class RouteExecutor:
                 self.logger.warning("⚠️  No router address provided")
             self.logger.info(f"   TYPE: {'prefix' if route.is_prefix else 'route'}")
                 
+            # Run the script and capture output
             result = subprocess.run(
                 [self.script_path],
                 env=env,
                 capture_output=True,
-                text=True,
-                check=True
+                text=True
             )
-            self.logger.info(f"✅ {'Prefix' if route.is_prefix else 'Route'} configured successfully: {result.stdout}")
-            return True
+            
+            # Check the return code
+            if result.returncode == 0:
+                self.logger.info(f"✅ {'Prefix' if route.is_prefix else 'Route'} configured successfully: {result.stdout}")
+                return True
+            else:
+                self.logger.error(f"❌ Failed to configure {'prefix' if route.is_prefix else 'route'}: {result.stderr}")
+                if self.logger.verbose:
+                    self.logger.debug(f"Command output: {result.stdout}")
+                    self.logger.debug(f"Command error: {result.stderr}")
+                    self.logger.debug(f"Return code: {result.returncode}")
+                return False
             
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"❌ Failed to configure {'prefix' if route.is_prefix else 'route'}: {e.stderr}")
+            self.logger.error(f"❌ Script execution failed: {str(e)}")
             if self.logger.verbose:
                 self.logger.debug(f"Command output: {e.stdout}")
                 self.logger.debug(f"Command error: {e.stderr}")
                 self.logger.debug(f"Return code: {e.returncode}")
+            return False
+        except Exception as e:
+            self.logger.error(f"❌ Unexpected error during route configuration: {str(e)}")
+            if self.logger.verbose:
+                self.logger.debug(f"Error details: {str(e)}")
             return False
 
 class RouteConfigurator:
