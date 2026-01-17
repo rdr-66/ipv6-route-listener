@@ -6,7 +6,7 @@ CONTAINER_NAME="route-listener-container"
 IMAGE_NAME="route-listener"
 
 # Default interface
-INTERFACE="ovs_eth2"
+INTERFACE="ovs_eth0"
 DEBUG=""
 VERBOSE=""
 
