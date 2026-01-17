@@ -46,5 +46,5 @@ RUN chmod +x bin/*
 RUN setcap cap_net_raw,cap_net_admin=eip $(readlink -f $(which python3))
 
 # Default command (can be overridden)
-ENV INTERFACE=ovs_eth2
+ENV INTERFACE=ovs_eth0
 CMD ["/bin/sh", "bin/start.sh", "-i", "${INTERFACE}"]
